@@ -1,0 +1,694 @@
+//libraries
+#include <Wire.h>
+#include <Encoder.h>
+#include "Adafruit_LEDBackpack.h"
+#include "Adafruit_GFX.h"
+#include "Adafruit_Trellis.h"
+
+/* sets a variable between 0 -15 using up down as well as shift button
+   it displays this using 4 leds.
+   0-3   led solid
+   4-7   led flashes
+   8-11 reverse of 0-4
+   12-15 reverse flashing
+*/
+// ----------------------------------define input pins for up down and shift buttons
+const int pushButtonUp = 10;
+const int pushButtonDwn = 9;
+const int pushButtonShift = 22;
+
+// ----------------------------button press comparison variables. used to output button state change rather than repeated instances of button state.
+int upButton = 0;
+int lastUpButtonState = 0;
+int dwnButton = 0;
+int lastDwnButtonState = 0;
+int shiftButton = 0;
+int lastShiftButtonState = 0;
+
+// ------------------------------------------main variable for controling stuff
+int varState = 0; // set by up/down buttons
+int useState = 0; // main variable for controlling user interface
+int shiftVar = 0; // 0 or 1 for shift button
+
+// ----------------------------------------------timing bits for LED flashing
+const long flashRate = 200;      // length between led state change
+unsigned long lastFlashFour = 0; //last time Led changed state
+unsigned long lastFlashFive = 0;
+unsigned long lastFlashSix = 0;
+unsigned long lastFlashSeven = 0;
+
+int flashStateFour = HIGH;
+int flashStateFive = HIGH;       // initalises led state on start up
+int flashStateSix = HIGH;
+int flashStateSeven = HIGH;
+
+//addressing the alphanumic stuff
+Adafruit_AlphaNum4 alpha4a = Adafruit_AlphaNum4();
+Adafruit_AlphaNum4 alpha4b = Adafruit_AlphaNum4();
+Adafruit_AlphaNum4 alpha4c = Adafruit_AlphaNum4();
+
+//encoder stuff
+Encoder myEncOne(2, 4);
+Encoder myEncTwo(3, 5);
+Encoder myEncTre(6, 8);
+Encoder myEncFor(7, 11);
+
+
+unsigned long thisTurn = 0;
+unsigned long lastTurn = 0;
+int smooMul = 1;
+
+// set variables to be controled by encoders
+//2x 64 part arrays 1 for dials and one for trellis buttons.
+int buttVar[64];
+int dialVar[64];
+
+int trellisMod = 0;
+int buttVal = 0;
+
+int dialA = (varState * 4 + 0);
+int dialB = (varState * 4 + 1);
+int dialC = (varState * 4 + 2);
+int dialD = (varState * 4 + 3);
+
+//------------------------------------------------trelis stuff
+
+#define LATCHING 1
+// set the mode here
+#define MODE LATCHING
+
+Adafruit_Trellis matrix0 = Adafruit_Trellis();
+Adafruit_Trellis matrix1 = Adafruit_Trellis();
+
+Adafruit_TrellisSet trellis =  Adafruit_TrellisSet(&matrix0, &matrix1);
+#define NUMTRELLIS 2
+
+#define numKeys (NUMTRELLIS * 16)
+
+#define INTPIN A2
+
+void alphaDisplay(int dialPos);
+
+void setup() // ------------------------------------------------------------------------------------------------ void setup starts
+{
+  Serial.begin(9600);
+  Serial3.begin(31250);
+  // ------------------------------set pins for buttons and LED's
+  pinMode(pushButtonUp, INPUT);
+  pinMode(pushButtonDwn, INPUT);
+  pinMode(pushButtonShift, INPUT);
+  pinMode(31, OUTPUT);
+  pinMode(33, OUTPUT);
+  pinMode(35, OUTPUT);
+  pinMode(37, OUTPUT);
+
+  //Alphanumic bits
+  alpha4a.begin(0x72);
+  alpha4b.begin(0x73);  // pass in the address
+  alpha4c.begin(0x74);
+  //--------------------------------trellis bits
+  pinMode(INTPIN, INPUT);
+  digitalWrite(INTPIN, HIGH);
+  trellis.begin(0x70, 0x71);
+
+  // light up all the LEDs in order
+  for (uint8_t i = 0; i < numKeys; i++) {
+    trellis.setLED(i);
+    trellis.writeDisplay();
+    delay(50);
+  }
+  // then turn them off
+  for (uint8_t i = 0; i < numKeys; i++) {
+    trellis.clrLED(i);
+    trellis.writeDisplay();
+    delay(50);
+  }
+}
+
+long oldPosOne = 0;
+long oldPosTwo = 0;
+long oldPosTre = 0;
+long oldPosFor = 0;
+
+void alphaDisplay(int dialPos)    // function alphaDisplay(); uses shiftVar to display the correct values from the dialVar[] array
+{
+  int alphA = (dialPos * 4 + 0);
+  int alphB = (dialPos * 4 + 1);
+  int alphC = (dialPos * 4 + 2);
+  int alphD = (dialPos * 4 + 3);
+
+  alpha4a.writeDigitAscii(0, dialVar[alphA]  / 100 + 48);
+  alpha4a.writeDigitAscii(1, dialVar[alphA]  % 100 / 10 + 48);
+  alpha4a.writeDigitAscii(2, dialVar[alphA]  % 10 + 48);
+
+  alpha4a.writeDigitAscii(3, dialVar[alphB]  / 100 + 48);
+  alpha4b.writeDigitAscii(0, dialVar[alphB]  % 100 / 10 + 48);
+  alpha4b.writeDigitAscii(1, dialVar[alphB]  % 10 + 48);
+
+  alpha4b.writeDigitAscii(2, dialVar[alphC]  / 100 + 48);
+  alpha4b.writeDigitAscii(3, dialVar[alphC]  % 100 / 10 + 48);
+  alpha4c.writeDigitAscii(0, dialVar[alphC]  % 10 + 48);
+
+  alpha4c.writeDigitAscii(1, dialVar[alphD]  / 100 + 48);
+  alpha4c.writeDigitAscii(2, dialVar[alphD]  % 100 / 10 + 48);
+  alpha4c.writeDigitAscii(3, dialVar[alphD]  % 10 + 48);
+
+  alpha4a.writeDisplay();
+  alpha4b.writeDisplay();
+  alpha4c.writeDisplay();
+}
+void noteOn(int num, int val)
+{
+  Serial3.write(0xB0); // midi chan (0xB0 - 0xcBF)
+  Serial3.write(num);  // cc number (0x00 - 0x7F)
+  Serial3.write(val);  // cc value  (0 - 127 or 16383 on hi rez)
+}
+
+void loop()  // -----------------------------------------------------------------------------------------------------------void loop starts
+{
+
+  //  -----------------------------------------------------------------------trellis buttons
+  delay(30); // 30ms delay is required, dont remove me!
+
+  if (trellisMod == 0)
+  {
+    if (MODE == LATCHING)
+    {
+      for (int x = 0; x < 32; x++)
+      {
+        if (buttVar[x] == 0)
+        {
+          trellis.clrLED(x);
+        }
+        else if (buttVar[x] == 1)
+        {
+          trellis.setLED(x);
+        }
+      }
+      trellis.writeDisplay();
+      if (trellis.readSwitches()) //---------------- If a button was just pressed or released...
+      {
+        for (uint8_t i = 0; i < numKeys; i++) // ----go through every button
+        {
+          if (trellis.justPressed(i))  //----------- if it was pressed...
+          {
+            if (buttVar[i] == 1)// ------------------Alternate the LED
+            {
+              noteOn((i + 64), 0);
+              trellis.clrLED(i);
+              buttVar[i + trellisMod] --;
+              if (buttVar[i + trellisMod] < 0)
+              {
+                buttVar[i + trellisMod] = 0;
+              }
+            }
+            else
+            {
+              noteOn((i + 64), 127);
+              trellis.setLED(i);
+              buttVar[i + trellisMod] ++;
+              if (buttVar[i + trellisMod] > 1)
+              {
+                buttVar[i + trellisMod] = 1;
+              }
+            }
+          }
+        }
+        trellis.writeDisplay(); // tell the trellis to set the LEDs we requested
+      }
+    }
+  }
+  else if (trellisMod == 32)
+  {
+    if (MODE == LATCHING)
+    {
+      for (int x = 32; x < 64; x++)
+      {
+        if (buttVar[x] == 0)
+        {
+          trellis.clrLED(x - 32);
+        }
+        else if (buttVar[x] == 1)
+        {
+          trellis.setLED(x - 32);
+        }
+      }
+      trellis.writeDisplay();
+      if (trellis.readSwitches()) //---------------- If a button was just pressed or released...
+      {
+        for (uint8_t i = 0; i < numKeys; i++) // ----go through every button
+        {
+          if (trellis.justPressed(i))  //----------- if it was pressed...
+          {
+            if (buttVar[i + 32] == 1)// ------------------Alternate the LED
+            {
+              noteOn(i + 96, 0);
+              trellis.clrLED(i);
+              buttVar[i + trellisMod] --;
+              if (buttVar[i + trellisMod] < 0)
+              {
+                buttVar[i + trellisMod] = 0;
+              }
+            }
+            else
+            {
+              noteOn(i + 96, 127);
+              trellis.setLED(i);
+              buttVar[i + 32] ++;
+              if (buttVar[i + trellisMod] > 1)
+              {
+                buttVar[i + trellisMod] = 1;
+              }
+
+            }
+          }
+        }
+        trellis.writeDisplay(); // tell the trellis to set the LEDs we requested
+      }
+    }
+  }
+
+  // -----------------------------------------controls LED flashing
+  unsigned long currentFlashFour = millis();
+  unsigned long currentFlashFive = millis();
+  unsigned long currentFlashSix = millis();
+  unsigned long currentFlashSeven = millis();
+
+  // -----------------------------------defines variables for buttons
+  int upButton = digitalRead(pushButtonUp);
+  int dwnButton = digitalRead(pushButtonDwn);
+  int shiftButton = digitalRead(pushButtonShift);
+
+  // ----------------------REMOVE repeats from held buttons and only outputs on button press
+  // ----------------------------------control increment from Up Button
+  if (upButton == 1)
+  {
+    if (upButton != lastUpButtonState)
+    {
+      varState ++;
+    }
+  }
+  lastUpButtonState = upButton;
+
+  // -----------------------------------control decrement with Down Button
+  if (dwnButton == 1)
+  {
+    if (dwnButton != lastDwnButtonState)
+    {
+      varState --;
+    }
+  }
+  lastDwnButtonState = dwnButton;
+
+  // -------control shift param
+
+  if (shiftButton == 1)
+  {
+    if (shiftButton != lastShiftButtonState)
+    {
+      shiftVar ++;
+    }
+  }
+  lastShiftButtonState = shiftButton;
+
+  if (shiftVar == 2)
+  {
+    shiftVar = 0;
+  }
+
+  //----------------------------controls the rollover for buttons (0 - 15)
+  if (varState == 16)
+  {
+    varState = 0;
+  }
+  if (varState == -1)
+  {
+    varState = 15;
+  }
+
+  // ---------------------------shift button fliping a variable to switch page for trellis
+  if (shiftVar == 1)
+  {
+    trellisMod = 32;
+  }
+  else if (shiftVar == 0)
+  {
+    trellisMod = 0;
+  }
+
+  // ------------------------------------------led and alpha numeric feedback
+  //use state +1 is parameter set where leds are numbered 31 = 1,   33 = 2,   35 = 3,   37 = 4,
+
+  if (varState == 0)
+  {
+    digitalWrite(31, LOW);
+    digitalWrite(33, HIGH);
+    digitalWrite(35, HIGH);
+    digitalWrite(37, HIGH);
+    alphaDisplay(varState);
+  }
+  else if (varState == 1)
+  {
+    digitalWrite(31, HIGH);
+    digitalWrite(33, LOW);
+    digitalWrite(35, HIGH);
+    digitalWrite(37, HIGH);
+    alphaDisplay(varState);
+  }
+  else if (varState == 2)
+  {
+    digitalWrite(31, HIGH);
+    digitalWrite(33, HIGH);
+    digitalWrite(35, LOW);
+    digitalWrite(37, HIGH);
+    alphaDisplay(varState);
+  }
+  else if (varState == 3)
+  {
+    digitalWrite(31, HIGH);
+    digitalWrite(33, HIGH);
+    digitalWrite(35, HIGH);
+    digitalWrite(37, LOW);
+    alphaDisplay(varState);
+  }
+  else if (varState == 4)
+  {
+    digitalWrite(33, HIGH);
+    digitalWrite(35, HIGH);
+    digitalWrite(37, HIGH);
+    if (currentFlashFour - lastFlashFour >= flashRate)
+    {
+      lastFlashFour = currentFlashFour;
+      if (flashStateFour == LOW)
+      {
+        flashStateFour = HIGH;
+      }
+      else
+      {
+        flashStateFour = LOW;
+      }
+      digitalWrite(31, flashStateFour);
+    }
+    alphaDisplay(varState);
+  }
+  else if (varState == 5)
+  {
+    digitalWrite(31, HIGH);
+    digitalWrite(35, HIGH);
+    digitalWrite(37, HIGH);
+    if (currentFlashFive - lastFlashFive >= flashRate)
+    {
+      lastFlashFive = currentFlashFive;
+      if (flashStateFive == LOW)
+      {
+        flashStateFive = HIGH;
+      }
+      else
+      {
+        flashStateFive = LOW;
+      }
+      digitalWrite(33, flashStateFive);
+    }
+    alphaDisplay(varState);
+  }
+  else if (varState == 6)
+  {
+    digitalWrite(31, HIGH);
+    digitalWrite(33, HIGH);
+    digitalWrite(37, HIGH);
+    if (currentFlashSix - lastFlashSix >= flashRate)
+    {
+      lastFlashSix = currentFlashSix;
+      if (flashStateSix == LOW)
+      {
+        flashStateSix = HIGH;
+      }
+      else
+      {
+        flashStateSix = LOW;
+      }
+      digitalWrite(35, flashStateSix);
+    }
+    alphaDisplay(varState);
+  }
+  else if (varState == 7)
+  {
+    digitalWrite(31, HIGH);
+    digitalWrite(33, HIGH);
+    digitalWrite(35, HIGH);
+    if (currentFlashSeven - lastFlashSeven >= flashRate)
+    {
+      lastFlashSeven = currentFlashSeven;
+      if (flashStateSeven == LOW)
+      {
+        flashStateSeven = HIGH;
+      }
+      else
+      {
+        flashStateSeven = LOW;
+      }
+      digitalWrite(37, flashStateSeven);
+    }
+    alphaDisplay(varState);
+  }
+  else if (varState == 8)
+  {
+    digitalWrite(31, HIGH);
+    digitalWrite(33, LOW);
+    digitalWrite(35, LOW);
+    digitalWrite(37, LOW);
+    alphaDisplay(varState);
+  }
+  else if (varState == 9)
+  {
+    digitalWrite(31, LOW);
+    digitalWrite(33, HIGH);
+    digitalWrite(35, LOW);
+    digitalWrite(37, LOW);
+    alphaDisplay(varState);
+  }
+  else if (varState == 10)
+  {
+    digitalWrite(31, LOW);
+    digitalWrite(33, LOW);
+    digitalWrite(35, HIGH);
+    digitalWrite(37, LOW);
+    alphaDisplay(varState);
+  }
+  else if (varState == 11)
+  {
+    digitalWrite(31, LOW);
+    digitalWrite(33, LOW);
+    digitalWrite(37, HIGH);
+    digitalWrite(35, LOW);
+    alphaDisplay(varState);
+  }
+  else if (varState == 12)
+  {
+    digitalWrite(33, LOW);
+    digitalWrite(35, LOW);
+    digitalWrite(37, LOW);
+    if (currentFlashFour - lastFlashFour >= flashRate)
+    {
+      lastFlashFour = currentFlashFour;
+      if (flashStateFour == LOW)
+      {
+        flashStateFour = HIGH;
+      }
+      else
+      {
+        flashStateFour = LOW;
+      }
+      digitalWrite(31, flashStateFour);
+    }
+    alphaDisplay(varState);
+  }
+  else if (varState == 13)
+  {
+    digitalWrite(31, LOW);
+    digitalWrite(35, LOW);
+    digitalWrite(37, LOW);
+    if (currentFlashFive - lastFlashFive >= flashRate)
+    {
+      lastFlashFive = currentFlashFive;
+      if (flashStateFive == LOW)
+      {
+        flashStateFive = HIGH;
+      }
+      else
+      {
+        flashStateFive = LOW;
+      }
+      digitalWrite(33, flashStateFive);
+    }
+    alphaDisplay(varState);
+  }
+  else if (varState == 14)
+  {
+    digitalWrite(31, LOW);
+    digitalWrite(33, LOW);
+    digitalWrite(37, LOW);
+    if (currentFlashSix - lastFlashSix >= flashRate)
+    {
+      lastFlashSix = currentFlashSix;
+      if (flashStateSix == LOW)
+      {
+        flashStateSix = HIGH;
+      }
+      else
+      {
+        flashStateSix = LOW;
+      }
+      digitalWrite(35, flashStateSix);
+    }
+    alphaDisplay(varState);
+  }
+  else if (varState == 15)
+  {
+    digitalWrite(31, LOW);
+    digitalWrite(33, LOW);
+    digitalWrite(35, LOW);
+    if (currentFlashSeven - lastFlashSeven >= flashRate)
+    {
+      lastFlashSeven = currentFlashSeven;
+      if (flashStateSeven == LOW)
+      {
+        flashStateSeven = HIGH;
+      }
+      else
+      {
+        flashStateSeven = LOW;
+      }
+      digitalWrite(37, flashStateSeven);
+    }
+    alphaDisplay(varState);
+  }
+
+  //---------------------------------------------------------encoder bit
+  int dialA = (varState * 4 + 0);
+  int dialB = (varState * 4 + 1);
+  int dialC = (varState * 4 + 2);
+  int dialD = (varState * 4 + 3);
+
+  int smooMul = 1;
+  
+  long newPosOne = myEncOne.read();
+  long newPosTwo = myEncTwo.read();
+  long newPosTre = myEncTre.read();
+  long newPosFor = myEncFor.read();
+  if ((newPosOne /4) != oldPosOne || (newPosTwo /4) != oldPosTwo || (newPosTre /4) != oldPosTre || (newPosFor /4) != oldPosFor)
+  {
+    thisTurn = millis();
+      if ((thisTurn - lastTurn) < 10)
+      {
+      smooMul = 25;
+      }
+      else if((thisTurn - lastTurn) < 50)
+      {
+      smooMul = 15;
+      }
+        else if((thisTurn - lastTurn) < 80)
+      {
+      smooMul = 8;
+      }
+       else if((thisTurn - lastTurn) < 120)
+      {
+      smooMul = 3;
+      }
+       else if((thisTurn - lastTurn) < 300)
+      {
+      smooMul = 1;
+      }
+    if (newPosOne != oldPosOne)
+    {
+      if (newPosOne > oldPosOne)
+      {
+        dialVar[dialA] += smooMul;
+        if (dialVar[dialA] > 127)
+        {
+          dialVar[dialA] = 127;
+        }
+      }
+      else if (newPosOne < oldPosOne)
+      {
+        dialVar[dialA]  -= smooMul;
+        if (dialVar[dialA] < 0)
+        {
+          dialVar[dialA] = 0;
+        }
+      }
+      myEncOne.write(0);
+      noteOn(dialA, dialVar[dialA]);
+    }
+    else if (newPosTwo != oldPosTwo)
+    {
+      if (newPosTwo > oldPosTwo)
+      {
+        dialVar[dialB] += smooMul;
+        if (dialVar[dialB] > 127)
+        {
+          dialVar[dialB] = 127;
+        }
+      }
+      else if (newPosTwo < oldPosTwo)
+      {
+        dialVar[dialB] -= smooMul;
+        if (dialVar[dialB] < 0)
+        {
+          dialVar[dialB] = 0;
+        }
+      }
+      myEncTwo.write(0);
+      noteOn(dialB, dialVar[dialB]);
+    }
+    else if (newPosTre != oldPosTre)
+    {
+      if (newPosTre > oldPosTre)
+      {
+        dialVar[dialC] += smooMul;
+        if (dialVar[dialC] > 127)
+        {
+          dialVar[dialC] = 127;
+        }
+      }
+      else if (newPosTre < oldPosTre)
+      {
+        dialVar[dialC]  -= smooMul;
+        if (dialVar[dialC] < 0)
+        {
+          dialVar[dialC] = 0;
+        }
+      }
+      myEncTre.write(0);
+      noteOn(dialC, dialVar[dialC]);
+    }
+    else if (newPosFor != oldPosFor)
+    {
+      if (newPosFor > oldPosFor)
+      {
+        dialVar[dialD] += smooMul;
+        if (dialVar[dialD] > 127)
+        {
+          dialVar[dialD] = 127;
+        }
+      }
+      else if (newPosFor < oldPosFor)
+      {
+        dialVar[dialD] -= smooMul;
+        if (dialVar[dialD] < 0)
+        {
+          dialVar[dialA] = 0;
+        }
+      }
+      myEncFor.write(0);
+      noteOn(dialD, dialVar[dialD]);
+    }
+  }
+  alphaDisplay(varState);
+  lastTurn = thisTurn;
+}
+
+
+
+
+
